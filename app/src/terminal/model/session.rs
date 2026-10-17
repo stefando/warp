@@ -1764,6 +1764,12 @@ pub mod testing {
             self
         }
 
+        /// Sets the abbreviations from fish's `abbr --show` output, as bootstrapping does.
+        pub fn with_fish_abbreviations(mut self, abbr_output: &str) -> Self {
+            self.abbreviations = ShellType::Fish.abbreviations(abbr_output);
+            self
+        }
+
         pub fn with_builtins(mut self, builtins: HashSet<SmolStr>) -> Self {
             self.builtins = builtins;
             self
