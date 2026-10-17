@@ -179,6 +179,46 @@ abbr -a -- ga 'git add' # imported from a universal variable, see `help abbr`";
     assert_eq!(abbrs.get("ga").unwrap(), "git add");
 }
 
+/// Real `abbr --show` output (fish 4.9.3) of a config with command-position abbreviations and
+/// abbreviations that only expand as an argument to `git`.
+const FISH_ABBR_SHOW_WITH_OPTIONS: &str = r#"abbr -a -- cls 'clear && printf "\\033[3J"'
+abbr -a -- ls 'eza --git'
+abbr -a -- ll 'eza -la --git'
+abbr -a -- cat 'bat --plain'
+abbr -a --position anywhere --set-cursor=@CURSOR@ --command git -- glc "log --pretty=tformat:'%h%x09%an%x09%s' @CURSOR@ | column -t -s \\t"
+abbr -a --position anywhere --command git -- summary "log --pretty=tformat:'%h%x09%an%x09%s' | column -t -s \\t"
+"#;
+
+/// `abbreviations()` maps the abbreviations that expand in command position. `glc` and `summary`
+/// only expand as an argument to `git` (`--command git`), so treating them as commands would expand
+/// `glc` at the start of a line and never after `git`.
+#[test]
+fn test_fish_parse_abbrs_only_maps_command_position_abbreviations() {
+    let abbrs = ShellType::Fish.abbreviations(FISH_ABBR_SHOW_WITH_OPTIONS);
+
+    let mut names = abbrs.keys().map(|name| name.as_str()).collect::<Vec<_>>();
+    names.sort_unstable();
+    assert_eq!(names, ["cat", "cls", "ll", "ls"]);
+}
+
+/// Fish single quotes support two escapes, `\\` and `\'`, as fish prints them in `abbr --show`.
+#[test]
+fn test_fish_parse_abbrs_unescapes_like_fish() {
+    let abbrs = ShellType::Fish.abbreviations(FISH_ABBR_SHOW_WITH_OPTIONS);
+    assert_eq!(abbrs.get("cls").unwrap(), r#"clear && printf "\033[3J""#);
+
+    let abbrs = ShellType::Fish.abbreviations(r#"abbr -a -- q 'it\'s "quoted"'"#);
+    assert_eq!(abbrs.get("q").unwrap(), r#"it's "quoted""#);
+
+    let abbrs = ShellType::Fish.abbreviations(
+        r#"abbr -a --set-cursor=! -- 4DIRS for\ dir\ in\ \*/\ncd\ \$dir\n!\ncd\ ..\nend"#,
+    );
+    assert_eq!(
+        abbrs.get("4DIRS").unwrap(),
+        "for dir in */\ncd $dir\n!\ncd ..\nend"
+    );
+}
+
 #[test]
 fn test_fish_parse_aliases() {
     let raw_aliases = "alias g git
