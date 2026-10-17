@@ -164,13 +164,17 @@ fn test_from_markdown_language_spec() {
     assert_eq!(None, ShellType::from_markdown_language_spec("-bash"));
 }
 
+fn fish_command_abbreviations(abbr_output: &str) -> HashMap<SmolStr, String> {
+    command_abbreviations(&ShellType::Fish.parse_abbreviations(abbr_output))
+}
+
 #[test]
 fn test_fish_parse_abbrs() {
     let raw_abbrs = "abbr -a -U -- gco 'git checkout'
 abbr -a -g -- gq 'git commit'
 abbr -a -U -- ehw 'echo \"Hello, world\"'
 abbr -a -- ga 'git add' # imported from a universal variable, see `help abbr`";
-    let abbrs = ShellType::Fish.abbreviations(raw_abbrs);
+    let abbrs = fish_command_abbreviations(raw_abbrs);
 
     assert_eq!(abbrs.len(), 4);
     assert_eq!(abbrs.get("gco").unwrap(), "git checkout");
@@ -194,29 +198,135 @@ abbr -a --position anywhere --command git -- summary "log --pretty=tformat:'%h%x
 /// `glc` at the start of a line and never after `git`.
 #[test]
 fn test_fish_parse_abbrs_only_maps_command_position_abbreviations() {
-    let abbrs = ShellType::Fish.abbreviations(FISH_ABBR_SHOW_WITH_OPTIONS);
+    let abbrs = fish_command_abbreviations(FISH_ABBR_SHOW_WITH_OPTIONS);
 
     let mut names = abbrs.keys().map(|name| name.as_str()).collect::<Vec<_>>();
     names.sort_unstable();
     assert_eq!(names, ["cat", "cls", "ll", "ls"]);
 }
 
+/// Every option form, as printed by fish 4.9.3's `abbr --show`.
+#[test]
+fn test_fish_parse_abbreviations_keeps_options() {
+    let abbrs = ShellType::Fish.parse_abbreviations(
+        r#"abbr -a --position anywhere --set-cursor='%' --command echo -- zz 'A%B'
+abbr -a --position anywhere --command git --command hub -- co checkout
+abbr -a --position anywhere --command '' -- nocmd 'only alone'
+abbr -a --regex '^\\.\\.+$' --function multicd -- dots
+abbr -a --position anywhere -- -C --color
+abbr -a -U -- gco 'git checkout' # imported from a universal variable, see `help abbr`
+"#,
+    );
+
+    let text = |s: &str| AbbreviationExpansion::Text(s.to_owned());
+    let abbreviation = |name: &str, expansion, position| Abbreviation {
+        name: name.into(),
+        expansion,
+        position,
+        commands: vec![],
+        regex: None,
+        set_cursor: None,
+    };
+    assert_eq!(
+        abbrs,
+        vec![
+            Abbreviation {
+                commands: vec!["echo".to_owned()],
+                set_cursor: Some("%".to_owned()),
+                ..abbreviation("zz", text("A%B"), AbbreviationPosition::Anywhere)
+            },
+            Abbreviation {
+                commands: vec!["git".to_owned(), "hub".to_owned()],
+                ..abbreviation("co", text("checkout"), AbbreviationPosition::Anywhere)
+            },
+            Abbreviation {
+                commands: vec![String::new()],
+                ..abbreviation("nocmd", text("only alone"), AbbreviationPosition::Anywhere)
+            },
+            Abbreviation {
+                regex: Some(AbbreviationRegex::new(r"^\.\.+$").unwrap()),
+                ..abbreviation(
+                    "dots",
+                    AbbreviationExpansion::Function("multicd".to_owned()),
+                    AbbreviationPosition::Command,
+                )
+            },
+            abbreviation("-C", text("--color"), AbbreviationPosition::Anywhere),
+            abbreviation("gco", text("git checkout"), AbbreviationPosition::Command),
+        ]
+    );
+}
+
+/// `--regex` patterns the `regex` crate can't compile (fish uses PCRE2) are skipped rather than
+/// matching the wrong tokens.
+#[test]
+fn test_fish_parse_abbreviations_skips_unsupported_regex() {
+    let abbrs = ShellType::Fish.parse_abbreviations(
+        r#"abbr -a --regex '(?<=x)y' -- lookbehind 'never'
+abbr -a -- ok 'fine'
+"#,
+    );
+    assert_eq!(
+        abbrs
+            .iter()
+            .map(|abbr| abbr.name.as_str())
+            .collect::<Vec<_>>(),
+        ["ok"]
+    );
+}
+
 /// Fish single quotes support two escapes, `\\` and `\'`, as fish prints them in `abbr --show`.
 #[test]
 fn test_fish_parse_abbrs_unescapes_like_fish() {
-    let abbrs = ShellType::Fish.abbreviations(FISH_ABBR_SHOW_WITH_OPTIONS);
+    let abbrs = fish_command_abbreviations(FISH_ABBR_SHOW_WITH_OPTIONS);
     assert_eq!(abbrs.get("cls").unwrap(), r#"clear && printf "\033[3J""#);
 
-    let abbrs = ShellType::Fish.abbreviations(r#"abbr -a -- q 'it\'s "quoted"'"#);
+    let abbrs = fish_command_abbreviations(r#"abbr -a -- q 'it\'s "quoted"'"#);
     assert_eq!(abbrs.get("q").unwrap(), r#"it's "quoted""#);
 
-    let abbrs = ShellType::Fish.abbreviations(
+    let abbrs = fish_command_abbreviations(
         r#"abbr -a --set-cursor=! -- 4DIRS for\ dir\ in\ \*/\ncd\ \$dir\n!\ncd\ ..\nend"#,
     );
     assert_eq!(
         abbrs.get("4DIRS").unwrap(),
         "for dir in */\ncd $dir\n!\ncd ..\nend"
     );
+}
+
+/// Fish prints non-printable characters with escapes like these (DEL as `\x7f`, Ctrl-A as `\ca`).
+#[test]
+fn test_fish_parse_abbrs_unescapes_numeric_and_control_escapes() {
+    let abbrs = fish_command_abbreviations(
+        r"abbr -a -- del a\x7fb
+abbr -a -- ctrl x\cay
+abbr -a -- uni é\U0001F600
+abbr -a -- oct \101\0102
+abbr -a -- tabq p\tq\ r
+abbr -a -- utf \xc3\xb6\Xc3\xb6\x41\x42
+abbr -a -- octdel \177",
+    );
+
+    assert_eq!(abbrs.get("del").unwrap(), "a\u{7f}b");
+    assert_eq!(abbrs.get("ctrl").unwrap(), "x\u{01}y");
+    assert_eq!(abbrs.get("uni").unwrap(), "é😀");
+    assert_eq!(abbrs.get("oct").unwrap(), "A\u{08}2");
+    assert_eq!(abbrs.get("tabq").unwrap(), "p\tq r");
+    assert_eq!(abbrs.get("utf").unwrap(), "ööAB");
+    assert_eq!(abbrs.get("octdel").unwrap(), "\u{7f}");
+}
+
+/// `--position anywhere` abbreviations without `--command` also expand as a command, so the
+/// completer offers them as commands.
+#[test]
+fn test_fish_command_abbreviations_include_anywhere_abbreviations() {
+    let abbrs = fish_command_abbreviations(
+        "abbr -a --position anywhere -- gs 'git status'
+abbr -a --position anywhere --command '' -- alone 'only alone'",
+    );
+
+    let mut names = abbrs.keys().map(|name| name.as_str()).collect::<Vec<_>>();
+    names.sort_unstable();
+    assert_eq!(names, ["alone", "gs"]);
 }
 
 #[test]

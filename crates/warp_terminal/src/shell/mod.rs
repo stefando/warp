@@ -1,3 +1,4 @@
+mod fish_abbreviations;
 mod unescape;
 
 use std::collections::{HashMap, HashSet};
@@ -22,6 +23,11 @@ use warp_util::path::{
     convert_msys2_to_windows_native_path, convert_wsl_to_windows_host_path, msys2_exe_to_root,
 };
 
+use self::fish_abbreviations::parse_fish_abbreviations;
+pub use self::fish_abbreviations::{
+    Abbreviation, AbbreviationExpansion, AbbreviationPosition, AbbreviationRegex,
+    command_abbreviations,
+};
 use self::unescape::unescape_quotes;
 use crate::model::escape_sequences;
 
@@ -463,28 +469,12 @@ impl ShellType {
         }
     }
 
-    pub fn abbreviations(self, abbr_output: &str) -> HashMap<SmolStr, String> {
+    /// Parses the shell's abbreviations (the output of fish's `abbr --show`).
+    pub fn parse_abbreviations(self, abbr_output: &str) -> Vec<Abbreviation> {
         match self {
-            ShellType::Fish => {
-                abbr_output
-                    .lines()
-                    .filter_map(|line| {
-                        // Fish outputs abbreviations in the form:
-                        // abbr -a -U -- name val # optional comment
-                        // First, strip off the comment at the end if it exists. Then,
-                        // strip off the preamble characters and separate the key and value
-                        // Note: The key cannot have spaces in it (fish won't allow you to define an
-                        // abbreviation with a space in the name)
-                        line.split_once(" #")
-                            .map_or(line, |split_line| split_line.0)
-                            .split_once(" -- ")
-                            .and_then(|(_, abbr)| abbr.split_once(' '))
-                    })
-                    .filter_map(|(key, value)| unescape_alias_key_value(key, value))
-                    .collect()
-            }
+            ShellType::Fish => parse_fish_abbreviations(abbr_output),
             // Abbreviations are currently only supported in fish
-            _ => HashMap::new(),
+            _ => Vec::new(),
         }
     }
 

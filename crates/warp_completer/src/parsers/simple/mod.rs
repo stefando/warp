@@ -104,6 +104,11 @@ pub fn command_without_leading_env_vars<S: AsRef<str>>(
     command.item.source(source)
 }
 
+/// Whether `word` is an env-var assignment (`KEY=VALUE`) rather than a command or argument.
+pub fn is_env_var_assignment(word: &str) -> bool {
+    word.split('=').count() == 2
+}
+
 /// Given a `command` string, returns:
 /// 1. the subcommands that make it up, including the recomposed commands at each level of nesting.
 ///    For example, given "ls $(foo | echo)", this API returns ["foo", "echo", "foo | echo", "ls $(foo | echo)"]
@@ -252,7 +257,7 @@ impl Command {
             let Some(first_command_part) = self.parts.first() else {
                 break;
             };
-            if first_command_part.to_string().split('=').count() != 2 {
+            if !is_env_var_assignment(&first_command_part.to_string()) {
                 break;
             }
             self.parts.remove(0);
