@@ -473,16 +473,21 @@ impl ShellType {
                     .filter_map(|line| {
                         // Fish outputs abbreviations in the form:
                         // abbr -a -U [OPTIONS] -- name val # optional comment
-                        // First, strip off the comment at the end if it exists. Then,
+                        // First, split the line into words, which drops the comment. Then,
                         // separate the options from the abbreviation, and its key from its value.
                         // Note: The key cannot have spaces in it (fish won't allow you to define an
                         // abbreviation with a space in the name)
-                        let (options, abbr) = line
-                            .split_once(" #")
-                            .map_or(line, |split_line| split_line.0)
-                            .split_once(" -- ")?;
-                        let (key, value) = abbr.split_once(' ')?;
-                        let (key, expansion) = unescape_alias_key_value(key, value)?;
+                        let words = fish_words(line);
+                        let (options, abbr) =
+                            words.split_at(words.iter().position(|&word| word == "--")?);
+                        let [_, key, value @ ..] = abbr else {
+                            return None;
+                        };
+                        // `--function` abbreviations have no value.
+                        if value.is_empty() {
+                            return None;
+                        }
+                        let (key, expansion) = unescape_alias_key_value(key, &value.join(" "))?;
                         Some((key, parse_fish_abbr_options(options, expansion)))
                     })
                     .collect()
@@ -1003,9 +1008,9 @@ impl Abbreviation {
 
 /// Reads the options `abbr --show` prints before `--`, e.g.
 /// `abbr -a --position anywhere --set-cursor=@CURSOR@ --command git`.
-fn parse_fish_abbr_options(options: &str, expansion: String) -> Abbreviation {
+fn parse_fish_abbr_options(options: &[&str], expansion: String) -> Abbreviation {
     let mut abbreviation = Abbreviation::new(expansion);
-    let mut words = options.split_whitespace();
+    let mut words = options.iter().copied();
     while let Some(word) = words.next() {
         match word.split_once('=') {
             Some(("--set-cursor", marker)) => {
@@ -1026,6 +1031,43 @@ fn parse_fish_abbr_options(options: &str, expansion: String) -> Abbreviation {
         }
     }
     abbreviation
+}
+
+/// Splits a line of fish's `abbr --show` output into words like fish does, but keeps their quotes
+/// and escapes. A word starting with `#` starts a comment, which ends the line.
+fn fish_words(line: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut word_start = None;
+    let mut quote = None;
+    let mut chars = line.char_indices().peekable();
+    while let Some((index, c)) = chars.next() {
+        if quote.is_none() && c.is_whitespace() {
+            if let Some(start) = word_start.take() {
+                words.push(&line[start..index]);
+            }
+            continue;
+        }
+        if word_start.is_none() {
+            if c == '#' {
+                return words;
+            }
+            word_start = Some(index);
+        }
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(open), _) if c == open => quote = None,
+            // In single quotes, fish only treats `\'` and `\\` as escapes.
+            (Some('\''), '\\') => {
+                chars.next_if(|&(_, next)| matches!(next, '\'' | '\\'));
+            }
+            (_, '\\') => {
+                chars.next();
+            }
+            _ => {}
+        }
+    }
+    words.extend(word_start.map(|start| &line[start..]));
+    words
 }
 
 /// Unescape the key and value for an alias, returning None if either fails
