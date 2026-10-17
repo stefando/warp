@@ -169,14 +169,19 @@ fn test_fish_parse_abbrs() {
     let raw_abbrs = "abbr -a -U -- gco 'git checkout'
 abbr -a -g -- gq 'git commit'
 abbr -a -U -- ehw 'echo \"Hello, world\"'
-abbr -a -- ga 'git add' # imported from a universal variable, see `help abbr`";
+abbr -a -- ga 'git add' # imported from a universal variable, see `help abbr`
+abbr -a -- hh 'echo a # b'
+abbr -a --description='see -- docs' -- dd 'echo dd'";
     let abbrs = ShellType::Fish.abbreviations(raw_abbrs);
 
-    assert_eq!(abbrs.len(), 4);
+    assert_eq!(abbrs.len(), 6);
     assert_eq!(abbrs["gco"].expansion, "git checkout");
     assert_eq!(abbrs["gq"].expansion, "git commit");
     assert_eq!(abbrs["ehw"].expansion, r#"echo "Hello, world""#);
     assert_eq!(abbrs["ga"].expansion, "git add");
+    // A quoted ` #` or ` -- ` is not a comment or the start of the abbreviation.
+    assert_eq!(abbrs["hh"].expansion, "echo a # b");
+    assert_eq!(abbrs["dd"].expansion, "echo dd");
 }
 
 /// The options that decide where an abbreviation expands and where the cursor goes, as printed by
@@ -188,7 +193,10 @@ fn test_fish_parse_abbr_options() {
 abbr -a --position anywhere --command git --command hub -- co checkout
 abbr -a --position anywhere --command '' -- alone 'only alone'
 abbr -a --position anywhere -- -C --color
-abbr -a --set-cursor='%' -- foobar 'foo % bar'"#,
+abbr -a --set-cursor='%' -- foobar 'foo % bar'
+abbr -a --description='uses --command git --position anywhere --set-cursor=X' -- ee 'echo ee'
+abbr -a --description="it's --command git" -- ff 'echo ff'
+abbr -a --set-cursor="a'b" -- gg "x a'b y""#,
     );
 
     assert_eq!(
@@ -206,6 +214,11 @@ abbr -a --set-cursor='%' -- foobar 'foo % bar'"#,
     assert_eq!(abbrs["-C"].commands, Vec::<String>::new());
     assert_eq!(abbrs["foobar"].set_cursor_marker.as_deref(), Some("%"));
     assert_eq!(abbrs["foobar"].position, AbbreviationPosition::Command);
+    // Options inside a quoted option value are not options.
+    assert_eq!(abbrs["ee"], Abbreviation::new("echo ee".to_owned()));
+    assert_eq!(abbrs["ff"], Abbreviation::new("echo ff".to_owned()));
+    assert_eq!(abbrs["gg"].set_cursor_marker.as_deref(), Some("a'b"));
+    assert_eq!(abbrs["gg"].expansion, "x a'b y");
 }
 
 #[test]
